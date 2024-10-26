@@ -1,18 +1,8 @@
-import random
-from tqdm import tqdm
-from transformers import AutoTokenizer
 import json
-from datasets import load_dataset
-from tokenizers import (
-    decoders,
-    models,
-    normalizers,
-    pre_tokenizers,
-    processors,
-    trainers,
-    Tokenizer,
-)
 import os
+import random
+
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 random.seed(42)
 
