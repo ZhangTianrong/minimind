@@ -16,15 +16,15 @@ import os
 
 random.seed(42)
 
-def train_tokenizer():
-    # 读取JSONL文件并提取文本数据
-    def read_texts_from_jsonl(file_path):
-        with open(file_path, 'r', encoding='utf-8') as f:   # This is a emory-efficient way to read a large file:
-            for line in f:                                  #   1. `open` returns a file object but does not load the file into memory
-                data = json.loads(line)                     #   2. `yield`ing a single line at a time allows us to process the file line-by-line
-                yield data['text']                          # However, the training of the tokenizer is not, because counting pairs and merging
-                                                            # potential tokens still require the entire dataset to be loaded into memory.
+# 读取JSONL文件并提取文本数据
+def read_texts_from_jsonl(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:   # This is a emory-efficient way to read a large file:
+        for line in f:                                  #   1. `open` returns a file object but does not load the file into memory
+            data = json.loads(line)                     #   2. `yield`ing a single line at a time allows us to process the file line-by-line
+            yield data['text']                          # However, the training of the tokenizer is not, because counting pairs and merging
+                                                        # potential tokens still require the entire dataset to be loaded into memory.
 
+def train_tokenizer():
     data_path = './dataset/tokenizer_train.jsonl'
 
     # 初始化tokenizer
@@ -73,6 +73,11 @@ def train_tokenizer():
                                                         # "Say Hi!" are tokenized the same way. However it makes less sense to add a space in front of
                                                         # Chinese, which turns "你好" from "ä½łå¥½" to "Ġä½łå¥½".
     )
+    # Other pre-tokenizers include `BertPreTokenizer`, `Metaspace`, `Whitespace`, `CharDelimiterSplit`, `Digits`, `UnicodeScripts`, etc.
+    # These predefined pre-tokenizers are designed to handle different types of text data, e.g. `UnicodeScripts` splits text based on language families.
+    # One can also implement a custom pre-tokenizer with `Split` by setting a custom `pattern`.
+    # [This blog](https://blog.csdn.net/weixin_49346755/article/details/126481695) summarizes the behavior of each with examples.
+
 
     # 设置训练器并添加特殊token
     trainer = trainers.BpeTrainer(
@@ -207,3 +212,19 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) is O(n^2) as it iterates through the dataset to count and
+# combine pairs to reduce the vocabulary size.
+# [SentencePiece](https://github.com/google/sentencepiece) implements BPE (and also ULM) with the help of priority queues to reduce the complexity to O(n log n).
+# [YouTokenToMe](https://github.com/VKCOM/YouTokenToMe) is another implementation of BPE that uses a hash table to reduce the complexity to O(n), but the repo is
+# not maintained anymore.
+# Surprisingly, considerable efforts are still being made to improve the efficiency of BPE, e.g. [Efficient BPE](https://github.com/Yikai-Liao/efficient_bpe).
+# [Efficient BPE](https://github.com/marta1994/efficient_bpe_explanation) implements an optimized version of BPE in Python, which can be referenced for educational
+# purposes.
+
+# Other frequently used tokenizers include WordPiece and Unigram (ULM).
+# [WordPiece](https://huggingface.co/learn/nlp-course/chapter6/6) is similar to BPE but merges the most likely pair (assuming tokens are independent) of tokens 
+# instead of the most frequent pair. See more in `train_tokenizer_wp.py`.
+# [Unigram](https://arxiv.org/abs/1804.10959)(ULM), on the other hand, does not merge pairs of tokens but rather initializes the vocabulary with an extrodinarily
+# large number of potential tokens and then iteratively split them into smaller tokens to maximize the liklihood of each sample text in the training corpus 
+# (assuming independent samples and independent tokens within each sample). See more in `train_tokenizer_ulm.py`.
