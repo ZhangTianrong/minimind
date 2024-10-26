@@ -1,10 +1,11 @@
 import json
 import os
-import random
 
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-random.seed(42)
+from utils import seed_everything
+
+seed_everything(42)
 
 # 读取JSONL文件并提取文本数据
 def read_texts_from_jsonl(file_path):
@@ -203,15 +204,65 @@ def main():
 if __name__ == '__main__':
     main()
 
-# In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) is O(n^2) as it iterates through the dataset to count and
-# combine pairs to reduce the vocabulary size.
-# [SentencePiece](https://github.com/google/sentencepiece) implements BPE (and also ULM) with the help of priority queues to reduce the complexity to O(n log n).
-# [YouTokenToMe](https://github.com/VKCOM/YouTokenToMe) is another implementation of BPE that uses a hash table to reduce the complexity to O(n), but the repo is
-# not maintained anymore.
+# === BPE implementations ===
+# In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) trainig is O(n^2) as it iterates through the dataset to
+# count and combine pairs to reduce the vocabulary size (more accurately O(n m) whith n being the target vocabulary size and n the size of the training corpus
+# in the basic alphabet).
+# [SentencePiece](https://github.com/google/sentencepiece) implements BPE with the help of priority queues to reduce the complexity to O(n log n).
+# [YouTokenToMe](https://github.com/VKCOM/YouTokenToMe) is another implementation of BPE that claims to reduce the complexity to O(n), but the repo is
+# not maintained anymore. # TODO: Check the actual complexity of YouTokenToMe and learn from it.
 # Surprisingly, considerable efforts are still being made to improve the efficiency of BPE, e.g. [Efficient BPE](https://github.com/Yikai-Liao/efficient_bpe).
-# [Efficient BPE](https://github.com/marta1994/efficient_bpe_explanation) implements an optimized version of BPE in Python, which can be referenced for educational
-# purposes.
 
+# == Understanding the complexity and optimizations of BPE ==
+# [Efficient BPE](https://github.com/marta1994/efficient_bpe_explanation) implements an optimized version of BPE in Python, resembling SentencePiece, which can 
+# be referenced for educational purposes.
+
+# = Training =
+# Briefly speaking, it implements a `PriorityMap` to keeps track of the most frequent pairs (i.e. the pairs with the most number of position identifiers stored
+# in a `set`) and allows for efficient lookup based on the pair's content, as well as a `LinkedArray` to maintain the sample texts' tokenization in a double
+# linked list-like structure. Then, whenever a pair is merged, it can easily find all the positions of the pair to 1) update the links to reflect the newly merged
+# token and 2) identify the pairs that are broken by the merge so the frequencies can be updated accordingly. The most costly operation here is the heapify
+# operation, which is O(log n), so the overall complexity of training is O(n log n).
+
+# = Inferencing =
+# After training, we get a vocabulary of tokens and a set of merge rules, which will be used during inferencing to encode text into tokens. For example, the first
+# 5 tokens in the tokenizer trained in this file other than the special ones, and the first 5 merge rules are:
+# ```python
+# { 
+#   ...                 # ```
+#   "!": 3,             # Ġ t
+#   "\"": 4,            # Ġ a
+#   "#": 5,     and     # i n
+#   "$": 6,             # h e
+#   "%": 7,             # r e
+#   ...                 # ...
+# }                     # ```   
+# ```
+# In a greedy manner, a prefix tree is used to find the longest token as the tokenizer scans through the text. Such tokenization doesn't uses the merge rules and
+# is O(k) in complexity with k being the length of the text in the basic alphabet. However, such approach deviates significantly from how token consituents are
+# added to vocabulary during training and as a result suffer from poor tokenization quality.
+# To improve the tokenization quality, the tokenizer can perform merge operations on the byte decomposition of the text according to the merge rules from lower 
+# rank to higher rank (the rank corresponds to the order the rule was adopted during training, i.e. the order of frequencies) until no more merge can be made. 
+# [Here](https://guillaume-be.github.io/2021-09-16/byte_pair_encoding#1-the-byte-pair-encoding-bpe-tokenizer) is an example of the tokenization procedure (this blog
+# post is also an excellent source to learn the Rust implementations of the differently optimized variants of BPE tokenizers). The complexity of this process is
+# O(k l) with l being the number of merge rules. In practice, pre-tokenizers are typically used to split the text into much shorter token consituents first (often
+# regarded as words), so k is very small, and "considerations like cache-locality outweigh the algorithmic complexity" improvement by, for example, replacing the 
+# naive search for best rule with a priority queue (see https://github.com/openai/tiktoken/blob/main/src/lib.rs#L52).
+
+# == Regularization ==
+# 
+
+# === Library ===
+# [Tokenizers](https://github.com/huggingface/tokenizers) from Huggingface is arguably the most popular library for tokenization. It also uses priority queue and
+# linked list in its [Rust implementation](https://docs.rs/tokenizers/latest/src/tokenizers/models/bpe/trainer.rs.html#432-613) similar to Efficient BPE and
+# SentencePiece (make sure to use the Rust implementation, e.g. `GPT2TokenizerFast` instead of `GPT2Tokenizer` for performance).
+# [Tiktoken](https://github.com/openai/tiktoken) from OpenAI is also popular. According to [this X post](https://x.com/xenovacom/status/1781008005502292103), it 
+# does not strictly follow the original BPE design in that it adds common words directly into the vocabulary regardless of if they appear in the training corpus.
+# The impact on the eventual tokenization quality is not clear though. Performance-wise, there is considerable Rashomon effect. Both libraries claim to be much
+# faster than the other in different scenarios. See their respective benchmarks [here](https://github.com/openai/tiktoken/raw/refs/heads/main/scripts/benchmark.py)
+# and [here](https://github.com/huggingface/tokenizers/blob/main/bindings/python/benches/test_tiktoken.py) for more information.
+
+# === Other tokenizers ===
 # Other frequently used tokenizers include WordPiece and Unigram (ULM).
 # [WordPiece](https://huggingface.co/learn/nlp-course/chapter6/6) is similar to BPE but merges the most likely pair (assuming tokens are independent) of tokens 
 # instead of the most frequent pair. See more in `train_tokenizer_wp.py`.
