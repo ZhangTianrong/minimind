@@ -5,8 +5,6 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from utils import seed_everything
 
-seed_everything(42)
-
 # 读取JSONL文件并提取文本数据
 def read_texts_from_jsonl(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:   # This is a emory-efficient way to read a large file:
@@ -200,6 +198,7 @@ def main():
     eval_tokenizer()
 
 if __name__ == '__main__':
+    seed_everything(42)
     main()
 
 # === BPE implementations ===
