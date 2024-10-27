@@ -67,8 +67,7 @@ def train_tokenizer():
     # Other pre-tokenizers include `BertPreTokenizer`, `Metaspace`, `Whitespace`, `CharDelimiterSplit`, `Digits`, `UnicodeScripts`, etc.
     # These predefined pre-tokenizers are designed to handle different types of text data, e.g. `UnicodeScripts` splits text based on language families.
     # One can also implement a custom pre-tokenizer with `Split` by setting a custom `pattern`.
-    # [This blog](https://blog.csdn.net/weixin_49346755/article/details/126481695) summarizes the behavior of each with examples.
-
+    # [This blog](https://blog.csdn.net/weixin_49346755/article/details/126481695) summarizes the behavior of each with examples. 
 
     # 设置训练器并添加特殊token
     trainer = trainers.BpeTrainer(
@@ -200,7 +199,6 @@ def main():
     train_tokenizer()
     eval_tokenizer()
 
-
 if __name__ == '__main__':
     main()
 
@@ -250,7 +248,11 @@ if __name__ == '__main__':
 # naive search for best rule with a priority queue (see https://github.com/openai/tiktoken/blob/main/src/lib.rs#L52).
 
 # == Regularization ==
-# 
+# The training itself is not deterministic if the way to break frequency ties gives a different result, but whenever a merge rule is adopted, the alternative merge
+# rules affected by it often gets disgarded (higher rank or even not adopted in the end). To make the tokenizer cater to more diverse ways of tokenizing text,
+# [BPE-Dropout](https://arxiv.org/abs/1910.13267) was proposed to randomly not apply some adopted merge rules during training (the inference process remains 
+# unchanged). There are other regularization methods like [Subword Regularization](https://arxiv.org/abs/1804.10959) but they are more dated and there haven't been
+# much research on tokenizatoin regularization since BPE-Dropout.
 
 # === Library ===
 # [Tokenizers](https://github.com/huggingface/tokenizers) from Huggingface is arguably the most popular library for tokenization. It also uses priority queue and
