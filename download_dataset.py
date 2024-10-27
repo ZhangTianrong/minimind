@@ -1,7 +1,7 @@
 import argparse
 import pathlib
 
-DATASET_DIR = pathlib.Path(__file__).parent / "data"
+DATASET_DIR = pathlib.Path(__file__).parent / "dataset"
 
 def download_hf_dataset(destination_dir=DATASET_DIR):
     import huggingface_hub
