@@ -13,20 +13,21 @@ def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(use_regex=True, add_prefix_space=False) 
 
     # 设置训练器并添加特殊token
-    continuing_subword_prefix="##"
-    initial_alphabet=pre_tokenizers.ByteLevel.alphabet()
-    initial_alphabet += [f"{continuing_subword_prefix}{char}" for char in initial_alphabet]
     trainer = trainers.WordPieceTrainer(
         vocab_size=6400, special_tokens=["<unk>", "<s>", "</s>"], show_progress=True,   # All WordPiece trainer parameters are also BPE trainer parameters.
                                                                                         # Here, we only focus on the parameters that are not covered in the BPE
                                                                                         # training script.
-        continuing_subword_prefix=continuing_subword_prefix,                            # In BERT, where WordPiece is used, the subword prefix is "##" to indicate
+        continuing_subword_prefix="##",                                                 # In BERT, where WordPiece is used, the subword prefix is "##" to indicate
                                                                                         # that the subword is not the first token of a word, e.g. "in" as in
                                                                                         # "include" is different from "##in" in "coin" if the "in"s are to be
-                                                                                        # tokenized.
-        end_of_word_suffix=None,                                                        # Similarly, one can choose to differentiate the end of a word with suffix.
-        initial_alphabet=initial_alphabet                                               # The initial alphabet need to also include the prefix (and/or suffix if 
-                                                                                        # used).
+                                                                                        # tokenized. In the original MiniMind tokenizer, the design is inclined
+                                                                                        # towards smaller vocabularies, so no continuing subword prefix is used.
+                                                                                        # You can compare the resulting tokenization of the two designs to see the
+                                                                                        # difference.
+        end_of_word_suffix="",                                                          # Similarly, one can choose to differentiate the end of a word with suffix.
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet()                            # The initial alphabet does need to also include the prefix or suffix, as
+                                                                                        # the trainer will automatically handle them (contraty to a number of
+                                                                                        # outdated tutorials suggest).
         
     )
 
@@ -99,7 +100,7 @@ def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     print("Tokenizer training completed and saved.")
 
 
-def eval_tokenizer(tokenizer_dir="./model/minimind_tokenizer_bpe"):
+def eval_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     from transformers import AutoTokenizer
 
     # 加载预训练的tokenizer
@@ -149,3 +150,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     seed_everything(42)
     main(args)
+
+# === Difference with BPE ===
+# Both WordPiece and BPE merge existing tokens to create new tokens. The only difference lies in how they decide which tokens to merge. Unlike BPE, which merges the
+# most frequent pair of tokens, WordPiece merges the pair of tokens that minimizes the loss of the model, defined as
+# loss 
