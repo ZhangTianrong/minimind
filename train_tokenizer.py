@@ -18,8 +18,9 @@ def train_tokenizer():
 
     # 初始化tokenizer
     tokenizer = Tokenizer(models.BPE())
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel( # Pre-tokenizers are responsible for splitting the input into potential tokens (a.k.a. token 
-                                                        # consiturents) and keeping track of the offsets of them in the original input string.
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel( # Pre-tokenizers are responsible for splitting the input into tokens contituents (a.k.a. "words" (in 
+                                                        # contrast to "sentenses" before pre-tokenization). Pre-tokenization makes sure no tokens would be 
+                                                        # larger than these consituents) and keeping track of the offsets of them in the original input string.
                                                         # `ByteLevel` pre-tokenizer splits the input into bytes, such that in UTF-8 encoding, each English
                                                         # character is one byte, while other characters including Chinese are 2~4 bytes.
                                                         # ```python
@@ -203,7 +204,7 @@ if __name__ == '__main__':
 
 # === BPE implementations ===
 # In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) trainig is O(n^2) as it iterates through the dataset to
-# count and combine pairs to reduce the vocabulary size (more accurately O(n m) whith n being the target vocabulary size and n the size of the training corpus
+# count and combine pairs to construct the vocabulary (more accurately O(n m) whith n being the target vocabulary size and n the size of the training corpus
 # in the basic alphabet).
 # [SentencePiece](https://github.com/google/sentencepiece) implements BPE with the help of priority queues to reduce the complexity to O(n log n).
 # [YouTokenToMe](https://github.com/VKCOM/YouTokenToMe) is another implementation of BPE that claims to reduce the complexity to O(n), but the repo is
