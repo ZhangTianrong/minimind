@@ -10,7 +10,6 @@ import torch
 import torch.distributed as dist
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, DistributedSampler
 from contextlib import nullcontext
 
@@ -33,9 +32,9 @@ def get_lr(it, all):
     lr_decay_iters = all
     min_lr = args.learning_rate / 10
 
-    if it < warmup_iters:
-        return args.learning_rate * it / warmup_iters
-    if it > lr_decay_iters:
+    if it < warmup_iters:                                                   # In words, this scheduler concatenates `LinearLR`, `CosineAnnealingLR` and a plateau.
+        return args.learning_rate * it / warmup_iters                       # TODO: Wouldn't lr = 0 for it = 0? Check if it would ever be 0.
+    if it > lr_decay_iters:                                                 # TODO: Compare manually setting lr with using PyTorch schedulers.
         return min_lr
     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
     assert 0 <= decay_ratio <= 1
@@ -50,11 +49,11 @@ def train_epoch(epoch, wandb):
         Y = Y.to(args.device)
         loss_mask = loss_mask.to(args.device)
 
-        lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch)
-        for param_group in optimizer.param_groups:
+        lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch)    # This is how to set the learning rate manually.
+        for param_group in optimizer.param_groups:                                  # TODO: Do people divide parameters into groups for LLMs? Why or why not?
             param_group['lr'] = lr
 
-        with ctx:
+        with ctx:                                                                   # AMP context manager wrapping the foward pass.
             out = model(X, Y)
             loss = out.last_loss / args.accumulation_steps
             loss_mask = loss_mask.view(-1)
@@ -162,7 +161,20 @@ if __name__ == "__main__":
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
 
-    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast()
+    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast()  # This context manager allows the scripts in the region to run in mixed precision.
+                                                                                # As per [documentation](https://pytorch.org/docs/stable/amp.html#torch.autocast).
+                                                                                # 1. "You should not call `half()` or `float()` on your model(s) or inputs when
+                                                                                #   using autocasting"
+                                                                                # 2. "`autocast` should wrap only the forward pass(es) of your network, including
+                                                                                #   the loss computation(s). Backward passes under autocast are not recommended.
+                                                                                #   Backward ops run in the same type that autocast used for corresponding forward
+                                                                                #   ops."
+                                                                                # 3. "Floating-point Tensors produced in an autocast-enabled region may be
+                                                                                #   `float16`". If a type mismatch occurs, cast the tensor to `float32` with
+                                                                                #   `.float()`.
+                                                                                # TODO: Read [more](https://pytorch.org/docs/stable/notes/amp_examples.html#amp-examples)
+                                                                                # TODO: What's the difference in using `torch.autocast(device_type=...)`? Why are we
+                                                                                #   disabling AMP for CPU?
 
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
     ddp_local_rank, DEVICE = 0, "cuda:0"
