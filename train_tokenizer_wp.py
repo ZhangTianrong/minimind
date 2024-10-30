@@ -6,7 +6,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from utils import seed_everything
 
-from train_tokenizer import read_texts_from_jsonl
+from train_tokenizer import read_texts_from_jsonl, eval_tokenizer
 
 def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     tokenizer = Tokenizer(models.WordPiece())
@@ -32,7 +32,7 @@ def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     )
 
     # 训练tokenizer
-    tokenizer.train_from_iterator(read_texts_from_jsonl(), trainer=trainer)
+    tokenizer.train_from_iterator(read_texts_from_jsonl('./dataset/tokenizer_train.jsonl'), trainer=trainer)
 
     # 设置解码器
     tokenizer.decoder = decoders.ByteLevel()
@@ -45,7 +45,7 @@ def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
     # 保存tokenizer
     os.makedirs(tokenizer_dir, exist_ok=True)
     tokenizer.save(os.path.join(tokenizer_dir, "tokenizer.json"))
-    tokenizer.model.save("./model/minimind_tokenizer")
+    tokenizer.model.save(tokenizer_dir)
 
     # 手动创建配置文件
     config = {
@@ -99,46 +99,6 @@ def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
 
     print("Tokenizer training completed and saved.")
 
-
-def eval_tokenizer(tokenizer_dir="./model/minimind_tokenizer_wp"):
-    from transformers import AutoTokenizer
-
-    # 加载预训练的tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
-
-    messages = [
-        {"role": "system", "content": "你是一个优秀的聊天机器人，总是给我正确的回应！"},
-        {"role": "user", "content": '是椭圆形的'},
-        {"role": "assistant", "content": '456'},
-        {"role": "user", "content": '456'},
-        {"role": "assistant", "content": '789'}
-    ]
-    new_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False
-    )
-
-    print(new_prompt)
-    # 获取词汇表大小（不包括特殊符号）
-    print('tokenizer词表大小：', tokenizer.vocab_size)
-
-    # 获取实际词汇表长度（包括特殊符号）
-    actual_vocab_size = len(tokenizer)
-    print('tokenizer实际词表长度：', actual_vocab_size)
-
-    new_prompt = '椭圆和⚪的关系是什么呢？因为明天下午要带家人去下医院，所以申请上午在家办公，因为明天下午要带家人去下医院，所以申请上午在家办公，因为明天下午要带家人去下医院，所以申请上午在家办公，下午请半天假~@LWJWe '
-    print(new_prompt)
-    model_inputs = tokenizer(new_prompt)
-
-    print(model_inputs)
-    print('长度：', len(model_inputs['input_ids']))
-
-    input_ids_ = model_inputs['input_ids']
-
-    response = tokenizer.decode(input_ids_)
-    print(response, end='')
-
-
 def main(args):
     train_tokenizer(args.tokenizer_dir)
     eval_tokenizer(args.tokenizer_dir)
@@ -153,5 +113,9 @@ if __name__ == '__main__':
 
 # === Difference with BPE ===
 # Both WordPiece and BPE merge existing tokens to create new tokens. The only difference lies in how they decide which tokens to merge. Unlike BPE, which merges the
-# most frequent pair of tokens, WordPiece merges the pair of tokens that minimizes the loss of the model, defined as
-# loss 
+# most frequent pair of tokens, WordPiece merges the pair of tokens that contributes the most to the likelihood of the training data. Specifically, WordPiece 
+# defines the following score for a merge of two tokens A and B:
+# score(A, B) = count(A, B) - count(A) - count(B)
+
+# IBM has a package that also implements tokenizer training with Hugging Face's tokenizers package. We can refer to the documentation for more information:
+# https://ibm.github.io/NL-FM-Toolkit/_modules/train_tokenizer.html It seems that WordPiece is typically not used with ByteLevel pre-tokenization.
