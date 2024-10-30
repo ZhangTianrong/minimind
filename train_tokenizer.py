@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 
@@ -13,7 +14,7 @@ def read_texts_from_jsonl(file_path):
             yield data['text']                          # However, the training of the tokenizer is not, because counting pairs and merging
                                                         # potential tokens still require the entire dataset to be loaded into memory.
 
-def train_tokenizer():
+def train_tokenizer(tokenizer_dir="./model/minimind_tokenizer_bpe"):
     data_path = './dataset/tokenizer_train.jsonl'
 
     # 初始化tokenizer
@@ -95,10 +96,9 @@ def train_tokenizer():
     assert tokenizer.token_to_id("</s>") == 2
 
     # 保存tokenizer
-    tokenizer_dir = "./model/minimind_tokenizer"
     os.makedirs(tokenizer_dir, exist_ok=True)
     tokenizer.save(os.path.join(tokenizer_dir, "tokenizer.json"))
-    tokenizer.model.save("./model/minimind_tokenizer")
+    tokenizer.model.save(tokenizer_dir)
 
     # 手动创建配置文件
     config = {
@@ -155,11 +155,11 @@ def train_tokenizer():
     print("Tokenizer training completed and saved.")
 
 
-def eval_tokenizer():
+def eval_tokenizer(tokenizer_dir="./model/minimind_tokenizer_bpe"):
     from transformers import AutoTokenizer
 
     # 加载预训练的tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("./model/minimind_tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
 
     messages = [
         {"role": "system", "content": "你是一个优秀的聊天机器人，总是给我正确的回应！"},
@@ -194,11 +194,15 @@ def eval_tokenizer():
     print(response, end='')
 
 
-def main():
-    train_tokenizer()
-    eval_tokenizer()
+def main(args):
+    train_tokenizer(args.tokenizer_dir)
+    eval_tokenizer(args.tokenizer_dir)
+
+parser = argparse.ArgumentParser("Train a BPE tokenizer for MiniMind.")
+parser.add_argument("--tokenizer-dir", type=str, default="./model/minimind_tokenizer_bpe", help="The directory to save the trained tokenizer.")
 
 if __name__ == '__main__':
+    args = parser.parse_args()
     seed_everything(42)
     main()
 
@@ -206,7 +210,9 @@ if __name__ == '__main__':
 # In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) trainig is O(n^2) as it iterates through the dataset to
 # count and combine pairs to construct the vocabulary (more accurately O(n m) whith n being the target vocabulary size and n the size of the training corpus
 # in the basic alphabet).
-# [SentencePiece](https://github.com/google/sentencepiece) implements BPE with the help of priority queues to reduce the complexity to O(n log n).
+# [SentencePiece](https://github.com/google/sentencepiece) implements BPE with the help of priority queues to reduce the complexity to O(n log n). It also does
+# not use whitespace as a token boundary. Such behavior can be replicated by setting a different `pre_tokenizer`. An implementation of SentencePiece BPE tokenizer 
+# can be found [here](https://github.com/huggingface/tokenizers/blob/main/bindings/python/py_src/tokenizers/implementations/sentencepiece_bpe.py).
 # [YouTokenToMe](https://github.com/VKCOM/YouTokenToMe) is another implementation of BPE that claims to reduce the complexity to O(n), but the repo is
 # not maintained anymore. # TODO: Check the actual complexity of YouTokenToMe and learn from it.
 # Surprisingly, considerable efforts are still being made to improve the efficiency of BPE, e.g. [Efficient BPE](https://github.com/Yikai-Liao/efficient_bpe).
