@@ -12,6 +12,14 @@ from torch import nn
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+# === Normalization ===
+# Normalization, in the context of deep learning, refers to centering (to get zero mean) and scaling (to get unit variance) of features to prevent gradients from
+# vanishing or exploding during training, so that the model can converge faster and more reliably. (We will see later that choosing a non-satuating activation 
+# fuction is also part of the solution to the vanishing gradient problem.)
+# The most common normalization methods include Batch Normalization, Layer Normalization, Instance Normalization, and Group Normalization, which differenciate in
+# over which coordinates the normalization is performed, as illustrated in the following figure from [Group Normalization](https://arxiv.org/abs/1803.08494):
+# ![BN vs LN vs IN vs GN](https://ar5iv.labs.arxiv.org/html/1803.08494/assets/x2.png)
+# [Batch Normalization](https://arxiv.org/abs/1502.03167): 
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float):
