@@ -13,19 +13,41 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 # === Normalization ===
-# Normalization, in the context of deep learning, refers to centering (to get zero mean) and scaling (to get unit variance) of features to prevent gradients from
-# vanishing or exploding during training, so that the model can converge faster and more reliably. (We will see later that choosing a non-satuating activation 
-# fuction is also part of the solution to the vanishing gradient problem.)
-# The most common normalization methods include Batch Normalization, Layer Normalization, Instance Normalization, and Group Normalization, which differenciate in
-# over which coordinates the normalization is performed, as illustrated in the following figure from [Group Normalization](https://arxiv.org/abs/1803.08494):
+# Normalization, in the context of deep learning, refers to centering (to get zero mean) and/or scaling (to get unit variance) of features to prevent gradients from
+# vanishing or exploding during training, so that the model can converge faster and more reliably. (We will see later that choosing a non-saturating activation
+# function is also part of the solution to the vanishing gradient problem. See also [this blog](https://blog.csdn.net/qq_44091004/article/details/129440577).)
+# The most common normalization methods include [Batch Normalization](https://arxiv.org/abs/1502.03167), [Layer Normalization](https://arxiv.org/abs/1607.06450v1),
+# [Instance Normalization](https://arxiv.org/abs/1607.08022), and [Group Normalization](https://arxiv.org/abs/1803.08494), which differenciate in
+# over which coordinates of their data the normalization is performed, as illustrated in the following figure from Group Normalization:
 # ![BN vs LN vs IN vs GN](https://ar5iv.labs.arxiv.org/html/1803.08494/assets/x2.png)
-# [Batch Normalization](https://arxiv.org/abs/1502.03167): 
+# Consider the typical input tensor $x$ shape of `(batch_size, seq_len, hidden_dim)` (i.e. the coordinates stand for `sample_idx` (in the batch), `position_idx` (of
+# a token in the sequence) and `feature_idx` respectively),
+# + Batch Normalization computes statistics over `(batch_size, seq_len)` slices of $x$ (a.k.a temporal batch normalization), i.e.
+#   $$\operatorname{BN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduction\_dim}={\tt feature\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduction\_dim}={\tt feature\_idx})+\epsilon}}\odot\gamma+\beta$$
+# + Layer Normalization computes statistics over `(seq_len, hidden_dim)` slices of $x$, i.e.
+#   $$\operatorname{LN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}={\tt sample\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt sample\_idx})+\epsilon}}\odot\gamma+\beta$$
+# + Instance Normalization builds upon LN by further assuming that each feature (with different `feature_idx`) has independent statistics, i.e.
+#   $$\operatorname{IN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx},{\tt feature\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx},{\tt feature\_idx}])+\epsilon}}\odot\gamma+\beta$$
+# + Group Normalization lies between LN and IN, by assuming that each group of a few features share the same statistics.
+# (The statistics are computed with each mini-batch during training, but the running statistics are stored and used during inferencing. Additionally, the variance
+# is estimated with the biased/sample estimator during traning and unbiased/population estimator during inferencing.)
+# However, in specific to NLP and Transformer models, LN and its variants are the predominant choices due to the nature of both data and model: 1) the textual input 
+# sequences vary in length greatly and there is no reason to assume that different text sequences should share the same statistics (refuting BN); 2) each of the
+# features are generally not considered to be mono-semantical, such that maintaining different statistics for each feature hurts stability while giving no apparent
+# benefit (refuting IN).
+# TODO: Since Transformer models use multi-head attention and each head is SoftMaxed independently, doesn't it make sense to use the heads as the grouping for 
+# features in GN?
+# == RMSNorm ==
+# [RMSNorm](https://arxiv.org/abs/1910.07467) is a variant of LN that omits the step of centering, i.e.
+# $$\operatorname{RMSNorm}(x) = \frac{x}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt sample\_idx})+\epsilon}}\odot\gamma+\beta$$
+# The invariance properties of RMSNorm vs the other normalization methods are summarized in [this table](https://ar5iv.labs.arxiv.org/html/1910.07467#S4.T1).
+# TODO: not finished yet
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.ones(dim)) # Similar to LN, each feature has its own weight, hence the number of parameters equal hidden dimension size.
 
     def _norm(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
