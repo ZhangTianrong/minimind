@@ -193,7 +193,7 @@ parser.add_argument("--tokenizer-dir", type=str, default="./model/minimind_token
 if __name__ == '__main__':
     args = parser.parse_args()
     seed_everything(42)
-    main()
+    main(args)
 
 # === BPE implementations ===
 # In the most straightforward implementation, [BytePair](https://dl.acm.org/doi/10.5555/177910.177914) trainig is O(n^2) as it iterates through the dataset to
