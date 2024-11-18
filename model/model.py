@@ -23,25 +23,36 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 # Consider the typical input tensor $x$ shape of `(batch_size, seq_len, hidden_dim)` (i.e. the coordinates stand for `sample_idx` (in the batch), `position_idx` (of
 # a token in the sequence) and `feature_idx` respectively),
 # + Batch Normalization computes statistics over `(batch_size, seq_len)` slices of $x$ (a.k.a temporal batch normalization), i.e.
-#   $$\operatorname{BN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduction\_dim}={\tt feature\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduction\_dim}={\tt feature\_idx})+\epsilon}}\odot\gamma+\beta$$
+#   $$\operatorname{BN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx}, {\tt position\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx}, {\tt position\_idx}])+\epsilon}}\odot\gamma+\beta$$
 # + Layer Normalization computes statistics over `(seq_len, hidden_dim)` slices of $x$, i.e.
-#   $$\operatorname{LN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}={\tt sample\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt sample\_idx})+\epsilon}}\odot\gamma+\beta$$
+#   $$\operatorname{LN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])+\epsilon}}\odot\gamma+\beta$$
 # + Instance Normalization builds upon LN by further assuming that each feature (with different `feature_idx`) has independent statistics, i.e.
-#   $$\operatorname{IN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx},{\tt feature\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx},{\tt feature\_idx}])+\epsilon}}\odot\gamma+\beta$$
+#   $$\operatorname{IN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}={\tt position\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt position\_idx})+\epsilon}}\odot\gamma+\beta$$
 # + Group Normalization lies between LN and IN, by assuming that each group of a few features share the same statistics.
-# (The statistics are computed with each mini-batch during training, but the running statistics are stored and used during inferencing. Additionally, the variance
-# is estimated with the biased/sample estimator during traning and unbiased/population estimator during inferencing.)
-# However, in specific to NLP and Transformer models, LN and its variants are the predominant choices due to the nature of both data and model: 1) the textual input 
+# For all of them, the statistics are computed with each mini-batch during training, but the running statistics are stored and used during inferencing. Additionally,
+# the variance is estimated with the biased/sample estimator during traning and unbiased/population estimator during inferencing. The learnable parameters $\gamma$
+# and $\beta$ are of the same shape as the statistics, i.e. the dimensions not reduced.
+# == LN favored in NLP and Transformer models ==
+# In specific to NLP and Transformer models, LN and its variants are the predominant choices due to the nature of both the data and the model: 1) the textual input 
 # sequences vary in length greatly and there is no reason to assume that different text sequences should share the same statistics (refuting BN); 2) each of the
 # features are generally not considered to be mono-semantical, such that maintaining different statistics for each feature hurts stability while giving no apparent
-# benefit (refuting IN).
+# benefit (refuting IN). Then, in analogy to the squeeze theoerm, LN seems the natural choice. 
 # TODO: Since Transformer models use multi-head attention and each head is SoftMaxed independently, doesn't it make sense to use the heads as the grouping for 
 # features in GN?
 # == RMSNorm ==
-# [RMSNorm](https://arxiv.org/abs/1910.07467) is a variant of LN that omits the step of centering, i.e.
-# $$\operatorname{RMSNorm}(x) = \frac{x}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt sample\_idx})+\epsilon}}\odot\gamma+\beta$$
+# [RMSNorm](https://arxiv.org/abs/1910.07467) is a variant of LN that omits the step of centering (and drops $\beta$), i.e.
+# $$\operatorname{RMSNorm}(x) = \frac{x}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])+\epsilon}}\odot\gamma$$
+# TODO: not finished yet, why rmsnorm over layernorm?
 # The invariance properties of RMSNorm vs the other normalization methods are summarized in [this table](https://ar5iv.labs.arxiv.org/html/1910.07467#S4.T1).
-# TODO: not finished yet
+# PyTorch implemented RMSNorm as provided in `torch.nn.RMSNorm` and `torch.nn.functional.rms_norm` with `rms_norm_symint` in C++ [here](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/layer_norm.cpp)
+# using the following interface more or less the same as LN:
+# + `input`: The tensor $x$ to be normalized
+# + `normalized_shape`: The shape of the dimensions to reduce over, i.e. the sizes of `reduce_dim` in the above formulas or `dim` in PyTorch functions like
+#   `torch.mean`. For `input` with shape $(d_1,\cdots,d_n)$, the acceptable dimensions need to be continuous and start from the last dimension, e.g. `[n-1, n]`
+#   with shape $[d_{n-1},d_n]$ or `n` with shape $d_n$.
+# + `weight`: The learnable parameter $\gamma$
+# + `eps`: The $\epsilon$ in the above formulas to prevent division by zero. When it is `None`, it actually defaults to the machine epsilon [here](https://en.cppreference.com/w/cpp/types/numeric_limits/epsilon).
+
 
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float):
@@ -50,11 +61,24 @@ class RMSNorm(torch.nn.Module):
         self.weight = nn.Parameter(torch.ones(dim)) # Similar to LN, each feature has its own weight, hence the number of parameters equal hidden dimension size.
 
     def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        # Replicating the C++ implementation below:
+        # ```cpp
+        #   Tensor upcasted_input = input.to(opmath_t);
+        #   Tensor rqrst_input = rsqrt(at::pow(upcasted_input, 2).mean(dims_to_reduce_ref, /*keep_dim=*/true).add_(eps_val));
+        #   Tensor result = upcasted_input.mul(rqrst_input).type_as(input);
+        # ```
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)  # The function `rsqrt` computes reciprocal square root with e.g. CUDA's `rsqrtf`
+                                                                            # function when available.
 
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
+
+# Option to use the PyTorch implementation of RMSNorm (not available with the )
+class RMSNorm(torch.nn.Module):
+    def __init__(self, dim: int, eps: float):
+        super().__init__()
+        self.layer = torch.nn.RMSNorm()
 
 
 def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
