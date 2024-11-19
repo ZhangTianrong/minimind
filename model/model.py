@@ -133,7 +133,8 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
-
+# Option to use SDPA from PyTorch (not available with the default PyTorch version used by MiniMind), which dispatches the computation to Flash Attention, xformers,
+# or PyTorch's C++ implementation for faster computation.
 class Attention(nn.Module):
     def __init__(self, args: LMConfig):
         super().__init__()
