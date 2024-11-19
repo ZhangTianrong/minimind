@@ -14,72 +14,89 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 # === Normalization ===
 # Normalization, in the context of deep learning, refers to centering (to get zero mean) and/or scaling (to get unit variance) of features to prevent gradients from
-# vanishing or exploding during training, so that the model can converge faster and more reliably. (We will see later that choosing a non-saturating activation
+# vanishing or exploding during training, so that models can converge faster and more reliably. (We will see later that choosing a non-saturating activation
 # function is also part of the solution to the vanishing gradient problem. See also [this blog](https://blog.csdn.net/qq_44091004/article/details/129440577).)
 # The most common normalization methods include [Batch Normalization](https://arxiv.org/abs/1502.03167), [Layer Normalization](https://arxiv.org/abs/1607.06450v1),
-# [Instance Normalization](https://arxiv.org/abs/1607.08022), and [Group Normalization](https://arxiv.org/abs/1803.08494), which differenciate in
-# over which coordinates of their data the normalization is performed, as illustrated in the following figure from Group Normalization:
+# [Instance Normalization](https://arxiv.org/abs/1607.08022), and [Group Normalization](https://arxiv.org/abs/1803.08494), which differenciate in how they interpret
+# feature and over which coordinates of their data the normalization is performed, as illustrated in the following figure from Group Normalization:
 # ![BN vs LN vs IN vs GN](https://ar5iv.labs.arxiv.org/html/1803.08494/assets/x2.png)
-# Consider the typical input tensor $x$ shape of `(batch_size, seq_len, hidden_dim)` (i.e. the coordinates stand for `sample_idx` (in the batch), `position_idx` (of
-# a token in the sequence) and `feature_idx` respectively),
-# + Batch Normalization computes statistics over `(batch_size, seq_len)` slices of $x$ (a.k.a temporal batch normalization), i.e.
+# There have been a lot of tutorials and discussions on these normalization methods, but most of them take the image perspective using inputs of the shape 
+# `(batch_size, height_times_width, channels)` as an example. While it is tempting to analogize `height_times_width` to `seq_len` and `channels` to `hidden_dim`,
+# it can actually lead to confusion and misunderstandings if we just rename the coordinates, as we will see when we come to, for example, LN.
+# Consider a typical textual input tensor $x$ with the shape of `(batch_size, seq_len, hidden_dim)` (i.e. the coordinates stand for `sample_idx` (in the batch),
+# `position_idx` (of a token in the sequence) and `feature_idx` respectively):
+# + Batch Normalization treats the input as batched features and computes statistics across the batching dimension. If the `[seq_len, hidden_dim]` slices of $x$ are
+#   treated as the features. Then for all `postion_idx, feature_idx` pairs, the means and variances are found over the `[batch_size]` slices along the only
+#   coordinate left, namely `sample_idx`. However, as we will see in LN, `feature_idx` has its intrinsic connections with the operations of tranformer models to be 
+#   considered the natural representative of what features are. So typically, `[sample\_idx, position\_idx]` are collectively regarded as the batch dimension, and
+#   the reduction happens to both of them, i.e.
 #   $$\operatorname{BN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx}, {\tt position\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt sample\_idx}, {\tt position\_idx}])+\epsilon}}\odot\gamma+\beta$$
-# + Layer Normalization computes statistics over `(seq_len, hidden_dim)` slices of $x$, i.e.
-#   $$\operatorname{LN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])+\epsilon}}\odot\gamma+\beta$$
-# + Instance Normalization builds upon LN by further assuming that each feature (with different `feature_idx`) has independent statistics, i.e.
-#   $$\operatorname{IN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}={\tt position\_idx})}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}={\tt position\_idx})+\epsilon}}\odot\gamma+\beta$$
-# + Group Normalization lies between LN and IN, by assuming that each group of a few features share the same statistics.
-# For all of them, the statistics are computed with each mini-batch during training, but the running statistics are stored and used during inferencing. Additionally,
-# the variance is estimated with the biased/sample estimator during traning and unbiased/population estimator during inferencing. The learnable parameters $\gamma$
-# and $\beta$ are of the same shape as the statistics, i.e. the dimensions not reduced.
-# == LN favored in NLP and Transformer models ==
-# In specific to NLP and Transformer models, LN and its variants are the predominant choices due to the nature of both the data and the model: 1) the textual input 
-# sequences vary in length greatly and there is no reason to assume that different text sequences should share the same statistics (refuting BN); 2) each of the
-# features are generally not considered to be mono-semantical, such that maintaining different statistics for each feature hurts stability while giving no apparent
-# benefit (refuting IN). Then, in analogy to the squeeze theoerm, LN seems the natural choice. 
-# TODO: Since Transformer models use multi-head attention and each head is SoftMaxed independently, doesn't it make sense to use the heads as the grouping for 
-# features in GN?
+#   The batch-dependant statistics are computed with each mini-batch during training, and the running statistics are stored for use during inferencing (with variance
+#   estimated using the biased estimator). As a result, BN is known to perform poorly at small batch sizes and can suffer from distribution shift at test time. The
+#   normalization across tokens within a sequance also makes it less suitable in text domain where the token ordering is important.
+# + Layer Normalization interpret features as whatever the preceeding layer of the model processes (thus the name) and carries out normalization over the feature
+#   dimensions. In the case of Transformer models, both attention mechanisms and linear layers operates on the last coordinate. Hence it treats every `[hidden_dim]`
+#   slice of $x$ as a feature vector and computes means and variances for each slice, i.e.
+#   $$\operatorname{LN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt feature\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt feature\_idx}])+\epsilon}}\odot\gamma+\beta$$
+#   with the coordinates reduced over the exact complement of those of BN. In the case of CNNs of the image domain, however, since convolutional layers operate on
+#   `[height_times_width, channels]` slices, each of such slices is regarded as a feature vector in LN; so the reduction is performed over both `pixel_idx` and
+#   `channel_idx` coordinates, overlapping with the typical image BNs at `pixel_idx` due to a different choice of feature dimensions (i.e. `channel_idx` alone). If
+#   we simply rename the to adapt the LN from image to text domain, we would be computing means and variances for `[seq_len, hidden_dim]` slices of $x$ instead,
+#   which diverges from the actual practices.
+# + Instance Normalization regards the input as batched instances such that each instance corresponds to features that minimally represent a sample. In the case of
+#   Transformer models, the `hidden_dim` `[seq_len]` slices of a sample in $x$ can be treated as `hidden_dim` instances of it since each of those slices potentially
+#   rerpesents a different interpretation of the entire text sequence. Therefore, the reduction is performed over the `position_idx` coordinate, i.e.
+#   $$\operatorname{IN}(x) = \frac{x - \operatorname{mean}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}])}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}])+\epsilon}}\odot\gamma+\beta$$
+#   IN is known to be used in style transfer in the image domain, where the style is considered to be dominated by only a few instances of the image, but as it
+#   normalizes over the `position_idx` coordinate, it is not ideal for texts for the same reason as BN.\
+# + Group Normalization is a generalization of LN or IN that allows the user to group features or instances into groups which share the same statistics. For example,
+#   instead of computing means and variances for each `[hidden_dim]` slice of $x$ in LN, we can group them into `num_groups` groups and compute the statistics for
+#   each `[hidden_dim/num_groups]` sub-slice of $x$ in GN. 
+#   TODO: See why GN is not favored in Transformer models. Since multi-head attention in Transformer models is already a form of feature grouping, GN seems to be
+#   a natural choice.
 # == RMSNorm ==
 # [RMSNorm](https://arxiv.org/abs/1910.07467) is a variant of LN that omits the step of centering (and drops $\beta$), i.e.
 # $$\operatorname{RMSNorm}(x) = \frac{x}{\sqrt{\operatorname{var}(x,\operatorname{reduce\_dim}=[{\tt position\_idx}, {\tt feature\_idx}])+\epsilon}}\odot\gamma$$
-# TODO: not finished yet, why rmsnorm over layernorm?
+# TODO: not finished yet, why rmsnorm over layernorm? 1) no centering, 2) no bias
 # The invariance properties of RMSNorm vs the other normalization methods are summarized in [this table](https://ar5iv.labs.arxiv.org/html/1910.07467#S4.T1).
-# PyTorch implemented RMSNorm as provided in `torch.nn.RMSNorm` and `torch.nn.functional.rms_norm` with `rms_norm_symint` in C++ [here](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/layer_norm.cpp)
+# PyTorch implemented RMSNorm as used in `torch.nn.RMSNorm` and `torch.nn.functional.rms_norm` with `rms_norm_symint` in C++ [here](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/layer_norm.cpp)
 # using the following interface more or less the same as LN:
 # + `input`: The tensor $x$ to be normalized
 # + `normalized_shape`: The shape of the dimensions to reduce over, i.e. the sizes of `reduce_dim` in the above formulas or `dim` in PyTorch functions like
 #   `torch.mean`. For `input` with shape $(d_1,\cdots,d_n)$, the acceptable dimensions need to be continuous and start from the last dimension, e.g. `[n-1, n]`
 #   with shape $[d_{n-1},d_n]$ or `n` with shape $d_n$.
-# + `weight`: The learnable parameter $\gamma$
-# + `eps`: The $\epsilon$ in the above formulas to prevent division by zero. When it is `None`, it actually defaults to the machine epsilon [here](https://en.cppreference.com/w/cpp/types/numeric_limits/epsilon).
+# + `weight`: The learnable parameter $\gamma$ of `normalized_shape`. In `torch.nn.RMSNorm`, It can be disabled by setting `learnable_affine` to `False`.
+# + `eps`: The $\epsilon$ in the above formulas to prevent division by zero. When it is `None`, it defaults to the machine epsilon [here](https://en.cppreference.com/w/cpp/types/numeric_limits/epsilon).
 
+# Option to use the PyTorch implementation of RMSNorm (not available with the default PyTorch version used by MiniMind)
+try:
+    # TODO: The interface of RMSNorm implemented in MiniMind (identical to [Meta's implementation](https://github.com/meta-llama/llama/blob/main/llama/model.py)) is 
+    # not compatible with the PyTorch implementation. We need to edit the code to ensure that the implementations can be used interchangeably. For now, we are 
+    # adjusting the PyTorch implementation to match the MiniMind implementation.
+    from torch.nn import RMSNorm as RMSNormPT
+    class RMSNorm(RMSNormPT):
+        def __init__(self, dim: int, eps: float):
+            super().__init__(normalized_shape=[dim], eps=eps)
+except ImportError:
+    class RMSNorm(torch.nn.Module):
+        def __init__(self, dim: int, eps: float):
+            super().__init__()
+            self.eps = eps
+            self.weight = nn.Parameter(torch.ones(dim)) # `gamma` of the same shape as features
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim)) # Similar to LN, each feature has its own weight, hence the number of parameters equal hidden dimension size.
+        def _norm(self, x):
+            # Replicating the C++ implementation below:
+            # ```cpp
+            #   Tensor upcasted_input = input.to(opmath_t);
+            #   Tensor rqrst_input = rsqrt(at::pow(upcasted_input, 2).mean(dims_to_reduce_ref, /*keep_dim=*/true).add_(eps_val));
+            #   Tensor result = upcasted_input.mul(rqrst_input).type_as(input);
+            # ```
+            return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)  # The function `rsqrt` computes reciprocal square root with e.g. CUDA's `rsqrtf`
+                                                                                # function when available.
 
-    def _norm(self, x):
-        # Replicating the C++ implementation below:
-        # ```cpp
-        #   Tensor upcasted_input = input.to(opmath_t);
-        #   Tensor rqrst_input = rsqrt(at::pow(upcasted_input, 2).mean(dims_to_reduce_ref, /*keep_dim=*/true).add_(eps_val));
-        #   Tensor result = upcasted_input.mul(rqrst_input).type_as(input);
-        # ```
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)  # The function `rsqrt` computes reciprocal square root with e.g. CUDA's `rsqrtf`
-                                                                            # function when available.
-
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
-# Option to use the PyTorch implementation of RMSNorm (not available with the )
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float):
-        super().__init__()
-        self.layer = torch.nn.RMSNorm()
-
+        def forward(self, x):
+            output = self._norm(x.float()).type_as(x)
+            return output * self.weight
 
 def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
