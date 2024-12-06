@@ -98,24 +98,39 @@ except ImportError:
             output = self._norm(x.float()).type_as(x)
             return output * self.weight
 
-def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-    return pos_cis
+# === Positional Encoding ===
+def precompute_pos_cis(
+    dim: int,               # Hidden dimension
+    end: int,               # Maximum sequence length
+    theta: float = 10000.0  # Choosing base frequency of 10000^{-2i/d} by default
+):                                                                                      
+    freqs = (1.0 / # (dim//2,)                                                          # Rotray Positional Embedding
+        (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)))               # It is suggested to refer to the [blogs](https://kexue.fm/tag/rope) by the
+    t = torch.arange(end, device=freqs.device) # type: ignore # (end,)                  # author of [RoFormer](https://arxiv.org/abs/2104.09864) for a more detailed
+    freqs = torch.outer(t, freqs).float() # type: ignore # (end, dim//2)                # explanation of the positional encoding.
+    pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64 # (end, dim//2)   # But in short, RoPE is an absolute positional encoding that captures the
+    return pos_cis                                                                      # relative positions through attention, i.e.
+                                                                                        # $$ (\boldsymbol{\mathcal{R}}_m \boldsymbol{q})^{\top}(\boldsymbol{\mathcal{R}}_n \boldsymbol{k}) =  \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_m^{\top}\boldsymbol{\mathcal{R}}_n \boldsymbol{k} = \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_{n-m} \boldsymbol{k} $$
+                                                                                        # where $m,n$ represent the position of token in the query and the key
+                                                                                        # respectively and $\boldsymbol{\mathcal{R}}_m \boldsymbol{q}, \boldsymbol{\mathcal{R}}_n \boldsymbol{k}$
+                                                                                        # refer to the operation of applying RoPE to these tokens' query/key 
+                                                                                        # vectors, e.g.
+                                                                                        # $$\boldsymbol{f}(\boldsymbol{q}, m) = R_f (\boldsymbol{q}, m)e^{\text{i}\Theta_f(\boldsymbol{q}, m)} = \Vert q\Vert e^{\text{i}(\Theta(\boldsymbol{q}) + m\theta)} = \boldsymbol{q} e^{\text{i}m\theta}$$
 
-
-def apply_rotary_emb(xq, xk, pos_cis):
-    def unite_shape(pos_cis, x):
+def apply_rotary_emb(
+    xq,     # (bs, seq_len, hidden_dim)
+    xk,     # (bs, seq_len, hidden_dim)
+    pos_cis # = pos_cis[current_idx:current_idx + seq_len] # (seq_len, hidden_dim//2)
+):
+    def unite_shape(pos_cis, x): # x is viewd as complex
         ndim = x.ndim
         assert 0 <= 1 < ndim
         assert pos_cis.shape == (x.shape[1], x.shape[-1])
-        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)] # bs, seq_len, *, hidden_dim//2 
         return pos_cis.view(*shape)
 
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))  # (bs, seq_len, hidden_dim//2)
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))  # (bs, seq_len, hidden_dim//2)
     pos_cis = unite_shape(pos_cis, xq_)
     xq_out = torch.view_as_real(xq_ * pos_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * pos_cis).flatten(3)
@@ -133,13 +148,32 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
-# Option to use SDPA from PyTorch (not available with the default PyTorch version used by MiniMind), which dispatches the computation to Flash Attention, xformers,
-# or PyTorch's C++ implementation for faster computation.
 class Attention(nn.Module):
     def __init__(self, args: LMConfig):
         super().__init__()
-        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
-        assert args.n_heads % self.n_kv_heads == 0
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads  # Multi-Head Attention vs. Grouped-Query Attention vs. Multi-Query Attention
+        assert args.n_heads % self.n_kv_heads == 0                                      # The following figure from [GQA](https://arxiv.org/abs/2305.13245) 
+                                                                                        # intuitively demonstrates the difference between the three types of attention:
+                                                                                        # ![overview of mh, gqa, and mqa](https://arxiv.org/html/2305.13245v3/extracted/5314337/images/gmq_architecture.png)
+                                                                                        # The use of heads in Transformer models was proposed to mitigate the lack
+                                                                                        # of discriptive power of single-head attention in [Attention is All You Need](https://arxiv.org/abs/1706.03762),
+                                                                                        # because in MHA, each head can use its own Softmax to allow for different
+                                                                                        # ways tokens attend to each other, which is frequently analogized to
+                                                                                        # different kernels in a CNN in that they both operate on the same feature
+                                                                                        # space using the same architecture but with different parameters adopted.
+                                                                                        # In practice, changes to the number of heads are achived by changing how
+                                                                                        # many partitions wq, wk, and wv are split into, while preserving the total
+                                                                                        # number of parameters. Empically speaking, the use of MHA achieves better
+                                                                                        # performance with the same number of parameters.
+                                                                                        # TODO: How to choose the number of heads in MHA?
+                                                                                        # While MHA ensures that the query of each head has its own key and value,
+                                                                                        # GQA and MQA allow for queries of different heads to share keys and values,
+                                                                                        # with MQA being a special case of GQA where all query heads share the same
+                                                                                        # keys and values. Such a design trades descriptiveness for memory use, and
+                                                                                        # the choice of n_rep = n_heads/n_kv_heads balances the two. In practice, 
+                                                                                        # GQA and MQA keeps the size of wq but reduces the size of wk and wv. GQA
+                                                                                        # and MQA. Hence, here we repeate wk and wv n_rep times before feeding them
+                                                                                        # to the attention implementation.
         self.n_local_heads = args.n_heads
         self.n_local_kv_heads = self.n_kv_heads
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
@@ -154,10 +188,10 @@ class Attention(nn.Module):
         self.dropout = args.dropout
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
 
-        # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
         mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
-        self.register_buffer("mask", mask, persistent=False)
+        self.register_buffer("mask", mask, persistent=False)    # Buffer are typically used for module states that are not trainable,
+                                                                # e.g. running statistics of a batch normalization layer.
 
     def forward(self, x: torch.Tensor, pos_cis: torch.Tensor, kv_cache=False):
         bsz, seqlen, _ = x.shape
@@ -374,9 +408,16 @@ class TransformerBlock(nn.Module):
             )
 
     def forward(self, x, pos_cis, kv_cache=False):
-        h = x + self.attention(self.attention_norm(x), pos_cis, kv_cache)
-        out = h + self.feed_forward(self.ffn_norm(h))
-        return out
+        h = x + self.attention(self.attention_norm(x), pos_cis, kv_cache)   # Pre-Norm vs. Post-Norm
+        out = h + self.feed_forward(self.ffn_norm(h))                       # Pre-Norm: $\boldsymbol{x}_{t+1}=\boldsymbol{x}_t+F_t(\mathrm{Norm}(\boldsymbol{x}_t))$
+        return out                                                          # Post-Norm: $boldsymbol{x}_{t+1}=\mathrm{Norm}(\boldsymbol{x}_t+F_t(\boldsymbol{x}_t))$
+                                                                            # Empirically Pre-Norm allows for faster convergence but Post-Norm yields better
+                                                                            # results.
+                                                                            # [The blog here](https://kexue.fm/archives/9009) discusses the reasons behind this 
+                                                                            # phenomenon. Briefly speaking, when the Transformer model deepens, Pre-Norm leads to
+                                                                            # significantly smaller differences in activations between layers, which in a sense,
+                                                                            # resembles widening the network more than deepening it, hurting the expressiveness of 
+                                                                            # the model (while improving memorization).
 
 
 class Transformer(PreTrainedModel):
