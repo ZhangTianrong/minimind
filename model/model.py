@@ -99,24 +99,27 @@ except ImportError:
             return output * self.weight
 
 # === Positional Encoding ===
+# Unlike RNNs, Transformer models do not have an inherent sense of order in the input sequence as the non-masked tokens are treated identically. To capture the
+# positional information, the Transformer model uses positional encodings to inject the information of the position of each token into the input embeddings.
+# RoPE (Rotary Positional Encoding) is so far the most popular positional encoding method in Transformer models.
+# It is suggested to refer to the [blogs](https://kexue.fm/tag/rope) by the author of [RoFormer](https://arxiv.org/abs/2104.09864) for a more detailed explanation
+# of the positional encoding. But in short, RoPE is an absolute positional encoding that captures the relative positions through attention, i.e.
+# $$ (\boldsymbol{\mathcal{R}}_m \boldsymbol{q})^{\top}(\boldsymbol{\mathcal{R}}_n \boldsymbol{k}) =  \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_m^{\top}\boldsymbol{\mathcal{R}}_n \boldsymbol{k} = \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_{n-m} \boldsymbol{k} $$
+# where $m,n$ represent the position of tokens in the query and the key respectively, and $\boldsymbol{\mathcal{R}}$ is a band matrix of width 2, such that each
+# 2x2 matrix on the diagonal rotates the corresponding pair of neighboring features in the query/key vectors by some angle.
+
 def precompute_pos_cis(
     dim: int,               # Hidden dimension
     end: int,               # Maximum sequence length
-    theta: float = 10000.0  # Choosing base frequency of 10000^{-2i/d} by default
+    theta: float = 10000.0  # Controlling the base frequency, which is set to 10000^{-2i/d} by default
 ):                                                                                      
-    freqs = (1.0 / # (dim//2,)                                                          # Rotray Positional Embedding
-        (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)))               # It is suggested to refer to the [blogs](https://kexue.fm/tag/rope) by the
-    t = torch.arange(end, device=freqs.device) # type: ignore # (end,)                  # author of [RoFormer](https://arxiv.org/abs/2104.09864) for a more detailed
-    freqs = torch.outer(t, freqs).float() # type: ignore # (end, dim//2)                # explanation of the positional encoding.
-    pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64 # (end, dim//2)   # But in short, RoPE is an absolute positional encoding that captures the
-    return pos_cis                                                                      # relative positions through attention, i.e.
-                                                                                        # $$ (\boldsymbol{\mathcal{R}}_m \boldsymbol{q})^{\top}(\boldsymbol{\mathcal{R}}_n \boldsymbol{k}) =  \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_m^{\top}\boldsymbol{\mathcal{R}}_n \boldsymbol{k} = \boldsymbol{q}^{\top} \boldsymbol{\mathcal{R}}_{n-m} \boldsymbol{k} $$
-                                                                                        # where $m,n$ represent the position of token in the query and the key
-                                                                                        # respectively and $\boldsymbol{\mathcal{R}}_m \boldsymbol{q}, \boldsymbol{\mathcal{R}}_n \boldsymbol{k}$
-                                                                                        # refer to the operation of applying RoPE to these tokens' query/key 
-                                                                                        # vectors, e.g.
-                                                                                        # $$\boldsymbol{f}(\boldsymbol{q}, m) = R_f (\boldsymbol{q}, m)e^{\text{i}\Theta_f(\boldsymbol{q}, m)} = \Vert q\Vert e^{\text{i}(\Theta(\boldsymbol{q}) + m\theta)} = \boldsymbol{q} e^{\text{i}m\theta}$$
+    freqs = (1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)))
+    t = torch.arange(end, device=freqs.device) # type: ignore # (end,)                  
+    freqs = torch.outer(t, freqs).float() # type: ignore # (end, dim//2)                
+    pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64 # (end, dim//2)   
+    return pos_cis                                                                      
 
+                                                                                        
 def apply_rotary_emb(
     xq,     # (bs, seq_len, hidden_dim)
     xk,     # (bs, seq_len, hidden_dim)
@@ -153,10 +156,10 @@ class Attention(nn.Module):
         super().__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads  # Multi-Head Attention vs. Grouped-Query Attention vs. Multi-Query Attention
         assert args.n_heads % self.n_kv_heads == 0                                      # The following figure from [GQA](https://arxiv.org/abs/2305.13245) 
-                                                                                        # intuitively demonstrates the difference between the three types of attention:
-                                                                                        # ![overview of mh, gqa, and mqa](https://arxiv.org/html/2305.13245v3/extracted/5314337/images/gmq_architecture.png)
-                                                                                        # The use of heads in Transformer models was proposed to mitigate the lack
-                                                                                        # of discriptive power of single-head attention in [Attention is All You Need](https://arxiv.org/abs/1706.03762),
+        self.n_local_heads = args.n_heads                                               # intuitively demonstrates the difference between the three types of attention:
+        self.n_local_kv_heads = self.n_kv_heads                                         # ![overview of mh, gqa, and mqa](https://arxiv.org/html/2305.13245v3/extracted/5314337/images/gmq_architecture.png)
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads                        # The use of heads in Transformer models was proposed to mitigate the lack
+        self.head_dim = args.dim // args.n_heads                                        # of discriptive power of single-head attention in [Attention is All You Need](https://arxiv.org/abs/1706.03762),
                                                                                         # because in MHA, each head can use its own Softmax to allow for different
                                                                                         # ways tokens attend to each other, which is frequently analogized to
                                                                                         # different kernels in a CNN in that they both operate on the same feature
@@ -174,10 +177,6 @@ class Attention(nn.Module):
                                                                                         # GQA and MQA keeps the size of wq but reduces the size of wk and wv. GQA
                                                                                         # and MQA. Hence, here we repeate wk and wv n_rep times before feeding them
                                                                                         # to the attention implementation.
-        self.n_local_heads = args.n_heads
-        self.n_local_kv_heads = self.n_kv_heads
-        self.n_rep = self.n_local_heads // self.n_local_kv_heads
-        self.head_dim = args.dim // args.n_heads
         self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
@@ -188,7 +187,7 @@ class Attention(nn.Module):
         self.dropout = args.dropout
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
 
-        mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
+        mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))    # Causal Mask
         mask = torch.triu(mask, diagonal=1)
         self.register_buffer("mask", mask, persistent=False)    # Buffer are typically used for module states that are not trainable,
                                                                 # e.g. running statistics of a batch normalization layer.
